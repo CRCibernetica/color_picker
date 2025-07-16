@@ -58,7 +58,7 @@
         
         <!-- RGB Value Display -->
         <div class="mb-6">
-            <p class="text-gray-400">Current RGB Value:</p>
+            <p class="text-gray-400">Selected RGB Value:</p>
             <p id="rgbValue" class="text-2xl font-mono tracking-widest font-bold">0, 255, 255</p>
         </div>
 
@@ -66,6 +66,9 @@
         <div class="flex flex-col space-y-4">
             <button id="connectButton" class="w-full bg-cyan-500 hover:bg-cyan-600 text-white font-bold py-3 px-4 rounded-lg transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-cyan-300">
                 Connect to Device
+            </button>
+            <button id="sendButton" class="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-4 rounded-lg transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-green-300 hidden">
+                Send Color
             </button>
             <button id="disconnectButton" class="w-full bg-red-500 hover:bg-red-600 text-white font-bold py-3 px-4 rounded-lg transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-red-300 hidden">
                 Disconnect
@@ -81,6 +84,7 @@
         // DOM Elements
         const connectButton = document.getElementById('connectButton');
         const disconnectButton = document.getElementById('disconnectButton');
+        const sendButton = document.getElementById('sendButton');
         const colorPicker = document.getElementById('colorPicker');
         const statusText = document.getElementById('statusText');
         const statusIndicator = document.getElementById('statusIndicator');
@@ -122,12 +126,14 @@
                 statusIndicator.classList.remove('bg-red-500', 'animate-pulse');
                 statusIndicator.classList.add('bg-green-500');
                 connectButton.classList.add('hidden');
+                sendButton.classList.remove('hidden');
                 disconnectButton.classList.remove('hidden');
             } else {
                 statusText.textContent = 'Disconnected';
                 statusIndicator.classList.remove('bg-green-500', 'bg-yellow-500', 'animate-pulse');
                 statusIndicator.classList.add('bg-red-500');
                 connectButton.classList.remove('hidden');
+                sendButton.classList.add('hidden');
                 disconnectButton.classList.add('hidden');
                 bleDevice = null;
                 uartTxCharacteristic = null;
@@ -154,7 +160,6 @@
                 console.log('Requesting Bluetooth device...');
                 bleDevice = await navigator.bluetooth.requestDevice({
                     filters: [{ services: [UART_SERVICE_UUID] }],
-                    // optionalServices: [UART_SERVICE_UUID] // Use this if the service is not advertised
                 });
 
                 console.log('Device selected:', bleDevice.name || `ID: ${bleDevice.id}`);
@@ -210,15 +215,12 @@
          */
         async function sendColor(hexColor) {
             if (!uartTxCharacteristic) {
-                // Silently fail if not connected, as this is called on every color change.
+                console.error("Cannot send color, not connected.");
                 return;
             }
 
             const rgb = hexToRgb(hexColor);
             if (!rgb) return;
-
-            // Update the UI with the new RGB value
-            rgbValue.textContent = `${rgb.r}, ${rgb.g}, ${rgb.b}`;
 
             const dataToSend = `${rgb.r},${rgb.g},${rgb.b}\n`; // Add newline for some UART implementations
             
@@ -226,26 +228,33 @@
                 const encoder = new TextEncoder();
                 await uartTxCharacteristic.writeValue(encoder.encode(dataToSend));
                 console.log(`Sent: ${dataToSend.trim()}`);
-            } catch (error) {
+            } catch (error)
+            {
                 console.error('Failed to send color:', error);
+            }
+        }
+        
+        /**
+         * Updates the displayed RGB value without sending it.
+         * @param {string} hexColor - The hex color string.
+         */
+        function updateRgbDisplay(hexColor) {
+             const rgb = hexToRgb(hexColor);
+            if (rgb) {
+                rgbValue.textContent = `${rgb.r}, ${rgb.g}, ${rgb.b}`;
             }
         }
 
         // --- Event Listeners ---
         connectButton.addEventListener('click', connectToDevice);
         disconnectButton.addEventListener('click', disconnectFromDevice);
-        
-        // Use 'input' event for real-time color changes
-        colorPicker.addEventListener('input', (event) => {
-            sendColor(event.target.value);
+        sendButton.addEventListener('click', () => {
+            sendColor(colorPicker.value);
         });
         
-        // Also update the text on 'change' in case 'input' isn't supported
-        colorPicker.addEventListener('change', (event) => {
-            const rgb = hexToRgb(event.target.value);
-            if (rgb) {
-                rgbValue.textContent = `${rgb.r}, ${rgb.g}, ${rgb.b}`;
-            }
+        // Update the display in real-time as the color picker changes
+        colorPicker.addEventListener('input', (event) => {
+            updateRgbDisplay(event.target.value);
         });
 
     </script>
