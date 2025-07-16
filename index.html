@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BLE Color Picker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Custom styles for the color picker input to make it larger and more touch-friendly */
+        input[type="color"] {
+            -webkit-appearance: none;
+            -moz-appearance: none;
+            appearance: none;
+            width: 12rem; /* 192px */
+            height: 12rem; /* 192px */
+            border: none;
+            cursor: pointer;
+            background-color: transparent;
+            border-radius: 50%;
+            transition: transform 0.2s ease-in-out;
+        }
+        input[type="color"]::-webkit-color-swatch-wrapper {
+            padding: 0;
+            border-radius: 50%;
+        }
+        input[type="color"]::-webkit-color-swatch {
+            border: 8px solid #4A5568; /* gray-700 */
+            border-radius: 50%;
+        }
+        input[type="color"]:hover {
+            transform: scale(1.05);
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white flex flex-col items-center justify-center min-h-screen p-4">
+
+    <div class="w-full max-w-md bg-gray-800 rounded-2xl shadow-2xl p-6 md:p-8 text-center">
+
+        <h1 class="text-3xl font-bold mb-2 text-cyan-400">BLE Color Controller</h1>
+        <p class="text-gray-400 mb-6">Select a color to send via BLE UART.</p>
+
+        <!-- Color Picker -->
+        <div class="flex justify-center mb-6">
+            <input type="color" id="colorPicker" value="#00ffff">
+        </div>
+
+        <!-- Status Display -->
+        <div class="bg-gray-700 rounded-lg p-4 mb-6">
+            <div class="flex items-center justify-center">
+                <div id="statusIndicator" class="w-4 h-4 rounded-full bg-red-500 mr-3 transition-colors duration-500"></div>
+                <span id="statusText" class="font-semibold text-lg">Disconnected</span>
+            </div>
+        </div>
+        
+        <!-- RGB Value Display -->
+        <div class="mb-6">
+            <p class="text-gray-400">Current RGB Value:</p>
+            <p id="rgbValue" class="text-2xl font-mono tracking-widest font-bold">0, 255, 255</p>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="flex flex-col space-y-4">
+            <button id="connectButton" class="w-full bg-cyan-500 hover:bg-cyan-600 text-white font-bold py-3 px-4 rounded-lg transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-cyan-300">
+                Connect to Device
+            </button>
+            <button id="disconnectButton" class="w-full bg-red-500 hover:bg-red-600 text-white font-bold py-3 px-4 rounded-lg transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-red-300 hidden">
+                Disconnect
+            </button>
+        </div>
+    </div>
+    
+    <footer class="mt-8 text-gray-500 text-sm">
+        <p>Requires a browser with Web Bluetooth support (e.g., Chrome).</p>
+    </footer>
+
+    <script>
+        // DOM Elements
+        const connectButton = document.getElementById('connectButton');
+        const disconnectButton = document.getElementById('disconnectButton');
+        const colorPicker = document.getElementById('colorPicker');
+        const statusText = document.getElementById('statusText');
+        const statusIndicator = document.getElementById('statusIndicator');
+        const rgbValue = document.getElementById('rgbValue');
+
+        // BLE UART Service and Characteristic UUIDs
+        const UART_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+        const UART_TX_CHARACTERISTIC_UUID = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // Transmit (App to Device)
+
+        // Global BLE variables
+        let bleDevice = null;
+        let bleServer = null;
+        let uartTxCharacteristic = null;
+        let isConnecting = false;
+
+        // --- Helper Functions ---
+
+        /**
+         * Converts a hex color string to an RGB object.
+         * @param {string} hex - The hex color string (e.g., "#ff0000").
+         * @returns {{r: number, g: number, b: number}} An object with r, g, b values (0-255).
+         */
+        function hexToRgb(hex) {
+            const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+            return result ? {
+                r: parseInt(result[1], 16),
+                g: parseInt(result[2], 16),
+                b: parseInt(result[3], 16)
+            } : null;
+        }
+        
+        /**
+         * Updates the UI to reflect the connection status.
+         * @param {boolean} connected - Whether the device is connected.
+         */
+        function updateUiForConnection(connected) {
+            if (connected) {
+                statusText.textContent = 'Connected';
+                statusIndicator.classList.remove('bg-red-500', 'animate-pulse');
+                statusIndicator.classList.add('bg-green-500');
+                connectButton.classList.add('hidden');
+                disconnectButton.classList.remove('hidden');
+            } else {
+                statusText.textContent = 'Disconnected';
+                statusIndicator.classList.remove('bg-green-500', 'bg-yellow-500', 'animate-pulse');
+                statusIndicator.classList.add('bg-red-500');
+                connectButton.classList.remove('hidden');
+                disconnectButton.classList.add('hidden');
+                bleDevice = null;
+                uartTxCharacteristic = null;
+            }
+        }
+
+        // --- BLE Logic ---
+
+        /**
+         * Handles the BLE connection process.
+         */
+        async function connectToDevice() {
+            if (isConnecting || (bleDevice && bleDevice.gatt.connected)) {
+                console.log("Already connecting or connected.");
+                return;
+            }
+            isConnecting = true;
+            
+            statusText.textContent = 'Searching...';
+            statusIndicator.classList.remove('bg-red-500');
+            statusIndicator.classList.add('bg-yellow-500', 'animate-pulse');
+
+            try {
+                console.log('Requesting Bluetooth device...');
+                bleDevice = await navigator.bluetooth.requestDevice({
+                    filters: [{ services: [UART_SERVICE_UUID] }],
+                    // optionalServices: [UART_SERVICE_UUID] // Use this if the service is not advertised
+                });
+
+                console.log('Device selected:', bleDevice.name || `ID: ${bleDevice.id}`);
+                bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+
+                statusText.textContent = 'Connecting...';
+                console.log('Connecting to GATT Server...');
+                bleServer = await bleDevice.gatt.connect();
+
+                console.log('Getting UART Service...');
+                const service = await bleServer.getPrimaryService(UART_SERVICE_UUID);
+
+                console.log('Getting UART TX Characteristic...');
+                uartTxCharacteristic = await service.getCharacteristic(UART_TX_CHARACTERISTIC_UUID);
+
+                console.log('Connection successful!');
+                updateUiForConnection(true);
+                // Send the initial color upon connection
+                sendColor(colorPicker.value);
+
+            } catch (error) {
+                console.error('Connection failed:', error);
+                statusText.textContent = 'Connection Failed';
+                setTimeout(() => updateUiForConnection(false), 2000);
+            } finally {
+                isConnecting = false;
+            }
+        }
+
+        /**
+         * Handles disconnection from the BLE device.
+         */
+        function disconnectFromDevice() {
+            if (!bleDevice || !bleDevice.gatt.connected) {
+                console.log('No device connected.');
+                return;
+            }
+            console.log('Disconnecting from device...');
+            bleDevice.gatt.disconnect();
+        }
+        
+        /**
+         * Callback for when the device disconnects unexpectedly.
+         */
+        function onDisconnected() {
+            console.log('Device disconnected.');
+            updateUiForConnection(false);
+        }
+
+        /**
+         * Sends the selected color value to the connected BLE device.
+         * @param {string} hexColor - The hex color string.
+         */
+        async function sendColor(hexColor) {
+            if (!uartTxCharacteristic) {
+                // Silently fail if not connected, as this is called on every color change.
+                return;
+            }
+
+            const rgb = hexToRgb(hexColor);
+            if (!rgb) return;
+
+            // Update the UI with the new RGB value
+            rgbValue.textContent = `${rgb.r}, ${rgb.g}, ${rgb.b}`;
+
+            const dataToSend = `${rgb.r},${rgb.g},${rgb.b}\n`; // Add newline for some UART implementations
+            
+            try {
+                const encoder = new TextEncoder();
+                await uartTxCharacteristic.writeValue(encoder.encode(dataToSend));
+                console.log(`Sent: ${dataToSend.trim()}`);
+            } catch (error) {
+                console.error('Failed to send color:', error);
+            }
+        }
+
+        // --- Event Listeners ---
+        connectButton.addEventListener('click', connectToDevice);
+        disconnectButton.addEventListener('click', disconnectFromDevice);
+        
+        // Use 'input' event for real-time color changes
+        colorPicker.addEventListener('input', (event) => {
+            sendColor(event.target.value);
+        });
+        
+        // Also update the text on 'change' in case 'input' isn't supported
+        colorPicker.addEventListener('change', (event) => {
+            const rgb = hexToRgb(event.target.value);
+            if (rgb) {
+                rgbValue.textContent = `${rgb.r}, ${rgb.g}, ${rgb.b}`;
+            }
+        });
+
+    </script>
+</body>
+</html>
